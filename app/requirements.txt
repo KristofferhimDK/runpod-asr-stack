@@ -2,13 +2,9 @@ fastapi
 uvicorn[standard]
 transformers
 huggingface_hub
-torch==2.*
-torchaudio==2.*
 soundfile
 librosa
 pydub
 numpy
 webrtcvad
-torch==2.*
-torchaudio==2.*
-
+pyannote.audio>=3.1
