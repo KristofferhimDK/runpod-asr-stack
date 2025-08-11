@@ -4,11 +4,16 @@ import contextlib
 import webrtcvad
 import numpy as np
 import soundfile as sf
+import tempfile
 
 TARGET_SR = 16000
 TARGET_CHANNELS = 1
 
+
 def run_ffmpeg_to_wav(in_path: str, out_path: str, sr: int = TARGET_SR):
+    """
+    Convert any audio file to mono 16 kHz WAV (PCM16).
+    """
     cmd = [
         "ffmpeg",
         "-y",
@@ -19,13 +24,18 @@ def run_ffmpeg_to_wav(in_path: str, out_path: str, sr: int = TARGET_SR):
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+
 def get_duration_seconds(path: str) -> float:
-    with contextlib.closing(wave.open(path, 'r')) as f:
+    with contextlib.closing(wave.open(path, "r")) as f:
         frames = f.getnframes()
         rate = f.getframerate()
         return frames / float(rate)
 
+
 def read_wav_mono_16k(path: str):
+    """
+    Load mono 16 kHz WAV as float32, return int16 array for WebRTC VAD.
+    """
     audio, sr = sf.read(path)
     if sr != TARGET_SR:
         raise ValueError(f"Expected {TARGET_SR} Hz, got {sr}")
@@ -34,23 +44,32 @@ def read_wav_mono_16k(path: str):
     audio_int16 = (audio * 32767).astype(np.int16)
     return audio_int16, sr
 
+
 def frame_generator(frame_ms, audio, sr):
+    """
+    Generate byte frames (int16) for WebRTC VAD.
+    """
     n = int(sr * (frame_ms / 1000.0))
     offset = 0
     byte_data = audio.tobytes()
-    bytes_per_sample = 2
+    bytes_per_sample = 2  # int16
     frame_size = n * bytes_per_sample
     while offset + frame_size <= len(byte_data):
         yield byte_data[offset:offset + frame_size]
         offset += frame_size
 
+
 def vad_segments(wav_path: str, aggressiveness: int = 2, frame_ms: int = 30, padding_ms: int = 300):
+    """
+    Simple VAD that returns [(start_s, end_s), ...] for speech regions.
+    """
     vad = webrtcvad.Vad(aggressiveness)
     audio, sr = read_wav_mono_16k(wav_path)
     frames = list(frame_generator(frame_ms, audio, sr))
     num_padding = int(padding_ms / frame_ms)
 
     voiced_flags = [vad.is_speech(f, sr) for f in frames]
+
     segments = []
     start = None
     voiced_countdown = 0
@@ -74,6 +93,7 @@ def vad_segments(wav_path: str, aggressiveness: int = 2, frame_ms: int = 30, pad
         end = len(frames) * (frame_ms / 1000.0)
         segments.append((start, end))
 
+    # merge tiny gaps
     merged = []
     for seg in segments:
         if not merged:
@@ -86,3 +106,23 @@ def vad_segments(wav_path: str, aggressiveness: int = 2, frame_ms: int = 30, pad
                 merged.append(list(seg))
 
     return [(float(s), float(e)) for s, e in merged]
+
+
+def extract_segment(in_wav: str, start_s: float, end_s: float) -> str:
+    """
+    Cut a [start_s, end_s] slice into a temp mono 16 kHz WAV and return its path.
+    """
+    dur = max(0.0, end_s - start_s)
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp.close()
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", f"{start_s:.3f}",
+        "-t", f"{dur:.3f}",
+        "-i", in_wav,
+        "-ac", "1",
+        "-ar", str(TARGET_SR),
+        tmp.name
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return tmp.name
